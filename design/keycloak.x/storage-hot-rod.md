@@ -253,3 +253,40 @@ The Hot Rod client transaction can work in the following modes:
 - **FULL_XA** - `RemoteCache` interacts with the `TransactionManager` using [`XAResource`](https://docs.oracle.com/javaee/7/api/javax/transaction/xa/XAResource.html) with the possibility of recovery. Should be avoided due to the [documentation note](https://infinispan.org/docs/stable/titles/hotrod_java/hotrod_java.html#hr_transactions_config_server) about performance degradation.
 
 Based on the above, **NON_DURABLE_XA** seems to be the best option to use given the requirements.
+
+# Infinispan Initialization
+
+## Remote caches
+
+Configuration of the remote caches will be stored declaratively in a xml file. The caches can be created either:
+* by a user when starting the Infinispan server using the provided configuration
+* by Keycloak which will check if the caches exist on the Infinispan server during the startup and if not, it will create them. However some users may want to tweak the configuration based on their special needs in which case they will create the caches themselves.
+
+Example of a remote cache configuration:
+```
+<infinispan>
+   <cache-container>
+       ...
+       <distributed-cache name="clients" mode="SYNC">
+           <encoding media-type="application/x-protostream"/>
+           <locking isolation="REPEATABLE_READ"/>
+           <transaction mode="NON_XA"/>
+       </distributed-cache>
+	...
+   </cache-container>
+</infinispan>
+```
+
+Each map storage type (clients, users, ...) will have a separate remote cache. The exact configuration of caches to be decided based on the testing. 
+
+## Protobuf schema
+
+It’s required to register protobuf schema definition to the Infinispan server for all entities which will be stored in the caches. We consider two options:
+* register Protobus schemas automatically during the startup by adding them to `___protobuf_metadata` cache. We need to make sure that an old schema won’t override a newer schema if a pod restarts. This is the preferred option.
+* `protostream-processor` dependency processes Java annotations in your classes at compile time to generate Protobuf schemas. These schemas then can be added to the Infinispan server by a user via CLI/REST.
+
+## Changes in cache configuration at runtime
+
+TBD - spin up new Infinispan server with desired cache configuration and migrate data using the [cache store migrator](https://infinispan.org/docs/dev/titles/upgrading/upgrading.html#offline_data_migration)?
+
+
