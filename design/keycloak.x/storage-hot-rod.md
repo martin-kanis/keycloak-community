@@ -267,11 +267,18 @@ Based on the above, **NON_DURABLE_XA** seems to be the best option to use given 
 
 # Infinispan Initialization
 
+The Infinispan server will be started externally by an administrator. Based on the `configureRemoteCaches` 
+option in `HotRodConnectionSpi` configuration, Keycloak can create remote caches on the Infinispan server
+using the default configuration.
+Some users may want to tweak the default cache configuration based on their special needs in which case 
+they can create the caches themselves.
+
+For developers and for testsuite, Keycloak will start an embedded Hot Hod server and create remote caches.
+
 ## Remote caches
 
-Configuration of the remote caches will be stored declaratively in a xml file. The caches can be created either:
-* Preferrably by a user when starting the Infinispan server using the provided configuration
-* For developers, by Keycloak which will check if the caches exist on the Infinispan server during the startup and if not, it will create them. However some users may want to tweak the configuration based on their special needs in which case they will create the caches themselves.
+Configuration of the remote caches will be stored declaratively in a xml file. This file will be used either 
+by Keycloak to create remote caches on the Infinispan server or by an administrator to create them manually.
 
 Example of a remote cache configuration:
 ```
@@ -280,15 +287,14 @@ Example of a remote cache configuration:
        ...
        <distributed-cache name="clients" mode="SYNC">
            <encoding media-type="application/x-protostream"/>
-           <locking isolation="REPEATABLE_READ"/>
-           <transaction mode="NON_XA"/>
        </distributed-cache>
 	...
    </cache-container>
 </infinispan>
 ```
 
-Each map storage type (clients, users, ...) will have a separate remote cache. The exact configuration of caches to be decided based on the testing. 
+Each map storage type (clients, users, ...) will have a separate remote cache. The exact configuration of caches 
+to be decided based on the testing. 
 
 ## Protobuf schema
 
