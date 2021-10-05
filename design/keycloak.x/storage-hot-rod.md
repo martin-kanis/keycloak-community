@@ -107,7 +107,7 @@ For the example above, the steps to change field `clientTemplateId` to `clientSc
 
 Each physical representation contains the `entitySchemaVersion` field that represents its _entity schema version_. To fulfill the requirements for 0-downtime upgrades, we need to be able to read all older physical representations of objects. 
 
-As described in the previous section, unmarshaling of stored objects is flexible enough to be able to read an older version when message definition contains all fields in unmarshalled stream. Moreover, unknown fields are ignored; though, we are losing the information that was stored there. 
+As described in the previous section, unmarshaling of stored objects is flexible enough to be able to read an older version when message definition contains all fields in unmarshalled stream. Beware of premature removal of field definitions: Unknown fields are ignored so even when their existence is transparent to the reader, the information stored there would be lost.
 
 In some cases, like the migration described in the previous section, we need to migrate one field to another. In this case, Keycloak storage reads the storage representation; checks what _entity schema version_ the read object has and migrate it when necessary. The migration is done in the Keycloak storage code after reading an older storage representation. The logical representation contains the migrated field. For example, this is how the migration could look like in the case of the previous migration path:
 
