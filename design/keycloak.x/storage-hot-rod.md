@@ -1,8 +1,7 @@
 # Keycloak X - Storage - Infinispan/Hot Rod persistence layer
 
 * **Status**: Draft
-* **JIRA**: https://issues.redhat.com/browse/KEYCLOAK-18997 // TODO: add some epic link
-
+* **JIRA**: https://issues.redhat.com/browse/KEYCLOAK-17633
 # Goals of this document
 
 This document aims to address the following items:
@@ -15,11 +14,11 @@ This document aims to address the following items:
 This document aims to _not_ address the following items:
 
 * Provide a way how to replace the existing Infinispan layer
-* Discuss design of caching or its impact on performance
+* Discuss the design of caching or its impact on performance
 
 # Technologies
 
-- **[Infinispan](https://infinispan.org)** - Infinispan is a distributed in-memory key/value data store with optional schema. It can be used both as an embedded Java library and as a language-independent service accessed remotely over a variety of protocols. In this proposal, we will target Infinispan in the remote (client/server) scenario.
+- **[Infinispan](https://infinispan.org)** - Infinispan is a distributed in-memory key/value data store with optional schema. It can be used both as an embedded Java library and as a language-independent service accessed remotely over a variety of protocols. In this proposal, we target Infinispan in the remote (client/server) scenario.
 - **[Hot Rod](https://infinispan.org/docs/stable/titles/hotrod_java/hotrod_java.html)** - Hot Rod is a wire protocol that Infinispan clients use to talk to a remote grid. It is a binary, platform-independent protocol that was developed in the open as a part of Infinispan.
 - **[Protocol buffers](https://developers.google.com/protocol-buffers/)** - Protocol Buffers (Protobuf) is a lightweight binary media type for structured data. In our case, it provides interoperability between the client (Keycloak-X store) and the Infinispan server.
 
@@ -38,7 +37,7 @@ A simple implementation of the following design can be found in this [pull reque
 
 # Data structure definition
 
-For describing a structure of data that is stored in the Infinispan server there are Protobuf message definitions. Based on the message definition the Hot Rod client knows how to marshal and unmarshal the data that is sent/received to/from server. To make the Infinispan server able to query stored data, it is also necessary to share message definitions with the Infinispan server.
+For describing a structure of data that is stored in the Infinispan server there are Protobuf message definitions. Message definitions represents storage representation of objects. Based on the message definition the Hot Rod client knows how to marshal and unmarshal the data that is sent/received to/from server. To make the Infinispan server able to query stored data, it is also necessary to share message definitions with the Infinispan server.
 
 An example of a message definition is following:
 
@@ -46,20 +45,20 @@ An example of a message definition is following:
 package nodowntimeupgrade;
 
 message InfinispanObjectEntity {
-    required string entityVersion = 1;
+    required string entitySchemaVersion = 1;
     required string id = 2;
     optional string name = 3;
     optional string clientTemplateId = 4;
 }
 ```
 
-This protobuf definition can be automatically generated from an annotated Java class definition. For setting Protobuf message-specific settings there are `@ProtoField` and `@ProtoDoc` (described in [Speeding up queries with indices](#speeding-up-queries-with-indices)) annotations.
+This protobuf definition can be automatically generated from an annotated Java class definition. For setting Protobuf message-specific settings there are `@ProtoField` and `@ProtoDoc` (described in [Speeding up queries with indices](#speeding-up-queries-with-indices) section) annotations.
 
 ```java
 public class InfinispanObjectEntity {
 
     @ProtoField(number = 1, required = true)
-    public int entityVersion = ModelVersion.VERSION_1.getVersion();
+    public int entitySchemaVersion = ModelVersion.VERSION_1.getVersion();
 
     @ProtoField(number = 2, required = true)
     public String id;
@@ -91,39 +90,26 @@ to the message definition and updating the definition in the Infinispan server a
 
 ### Changing field name/type
 
-It is possible to change field names or types. However, such changes can introduce backward incompatibility that we need to avoid due to no-downtime requirements. We can avoid breaking backward compatibility by doing updates in the  steps explained below. 
+It is possible to change field names or types. However, such changes can introduce backward incompatibility that we need to avoid due to no-downtime requirements. Also, removing or renaming fields can break Ickle query searches, see the [Querying objects](#querying-objects) section for more details. In this section we show how to avoid backward incompatibilities on simple scenario without considering migration for Ickle search queries.  
 
-The steps will be illustrated on the following example: let us have a message definition containing field `clientTemplateId` in the first physical version (`entityVersion = 1`). We want to replace it with `clientScopeId`. The migration path is prescribed as `clientScopeId = "template-" + clientTemplateId`).
+The steps will be illustrated on the following example: let us have a message definition containing field `clientTemplateId` in the _entity schema version_ 1 (`entitySchemaVersion = 1`). We want to replace it with `clientScopeId`. The migration path is prescribed as `clientScopeId = "template-" + clientTemplateId`).
 
----
-
-**NOTE**
-
-In this proposal, we distinguish between two types of version:
-
-* **Version of storage** - This corresponds to the version of source code and message definitions on the Keycloak server side. Each storage area (clients, realms, groups, etc.) has its own independent storage version that is incremented only when there is a change in the source code or message definition in the corresponding storage area. 
-* **Version of object's physical representation** - This refers to the version of physical representation in the storage (Infinispan server); in other words, this says what version of storage originally created the object in the store. This version can be incremented by reading the old object from the store by newer storage, migrating it, and writing it back into the storage.
-
----
-
-Let us assume that the storage version before update is `1`.
 For the example above, the steps to change field `clientTemplateId` to `clientScopeId` is as follows:
 
-1. We update the old message defintion with `entityVersion = 2` (incrementing version of storage) so that it contains both `clientTemplateId` and `clientScopeId`
-2. Logical representation of objects in storage version 2 only contains the new field (`clientScopeId`). The deprecated `clientTemplateId` field is taken into account in three cases:
-   1. When writing to the storage and `clientScopeId` value starts with `"template-"` prefix. In such case, `clientTemplateId` is derived from `clientScopeId` by removing `"template-"` prefix and written
-   together with `clientScopeId`. This is to support the reading of objects version 2 by storage version 1. 
-   1. When reading an old physical representation from the storage. The `clientTemplateId` field is read from the storage, and migrated to `clientScopeId`. This step is necessary read objects version 1 by storage version 2.
-   2. When querying objects. This will be discussed in the section [Querying objects](#querying-objects).
+1. We update the _entity schema_ to version `2` (`entitySchemaVersion = 2`) by adding `clientScopeId` to the Protobuf message definition so that it contains both `clientTemplateId` and `clientScopeId`
+2. The logical representation only contains the new field (`clientScopeId`). The deprecated `clientTemplateId` field is taken into account in three cases:
+   1. When writing to the storage and `clientScopeId` value starts with `"template-"` prefix. In such case, `clientTemplateId` is derived from `clientScopeId` by removing `"template-"` prefix and written together with `clientScopeId`. This is to support the reading of storage representation with _entity schema version_ `2` older storage implementation. 
+   2. When reading from the storage and the object has lower _entity schema version_. The `clientTemplateId` field is read from the storage, and migrated to `clientScopeId`. This step is necessary to read objects with _entity schema version_ 1 by the newer storage implementations.
+   3. When querying objects. This part is discussed in the section [Querying objects](#querying-objects).
 3. Then, there can be a new storage version `>= 3` which removes the deprecated `clientTemplateId`. Migrating to that storage version requires that all stored objects are migrated to physical object version `>= 2`. We will get back to the removal of fields later as it gets more complicated with regards to querying.
 
 # Reading older physical representations
 
-Each physical representation contains `entityVersion` field that represents its physical representation version (version of the storage that created it). To fulfill the requirements for 0-downtime upgrades, we need to be able to read all older physical representations of objects. 
+Each physical representation contains the `entitySchemaVersion` field that represents its _entity schema version_. To fulfill the requirements for 0-downtime upgrades, we need to be able to read all older physical representations of objects. 
 
 As described in the previous section, unmarshaling of stored objects is flexible enough to be able to read an older version when message definition contains all fields in unmarshalled stream. Moreover, unknown fields are ignored; though, we are losing the information that was stored there. 
 
-In some cases, like the migration described in the previous section, we need to migrate one field to another. In this case, Keycloak storage reads the physical representation; checks what physical version the read object is and migrate it when necessary. The migration is done in the Keycloak storage code after reading an older physical representation. The logical representation of the object must contain the migrated field. For example, this is how the migration could look like in the case of the previous migration path:
+In some cases, like the migration described in the previous section, we need to migrate one field to another. In this case, Keycloak storage reads the storage representation; checks what _entity schema version_ the read object has and migrate it when necessary. The migration is done in the Keycloak storage code after reading an older storage representation. The logical representation contains the migrated field. For example, this is how the migration could look like in the case of the previous migration path:
 
 ```java
 public class EntityMigrationToVersion2 extends ObjectEntityDelegate {
@@ -143,11 +129,11 @@ public class EntityMigrationToVersion2 extends ObjectEntityDelegate {
 }
 ```
 
-* When Keycloak storage version `2` detects that obtained physical representation has older version than current (in this case `1`), it wraps the read physical representation into a migration object. 
-* This migration object overrides getter methods when some migration is needed on the corresponding field. In the example above, it overrides method `getClientScopeId` so that `clientTemplateId` is used when `clientScopeId` is not set.
-* The name for the migration object can be chosen arbitralily. `EntityMigrationToVersion2` is just an example.
-* The logical layer of Keycloak can see only `clientScopeId`; the presence of the `clientTemplateId` field is hidden.
-* Too long chain of delegations can cause performance overhead. It can be solved by the migration of physical representation to a newer version (in the future might be solved by some scheduled tasks functionality)
+* When Keycloak storage corresponding to _entity schema version_ `2` detects that obtained storage representation has an older version (in this case `1`) than the current (`2`), it wraps the read storage representation into a migration object. 
+* This migration object overrides getter methods for fields that require migration. In the example above, it overrides the method `getClientScopeId` so that the `clientTemplateId` field is used when `clientScopeId` is not set.
+* The name for the migration object can be chosen arbitrarily. `EntityMigrationToVersion2` is just an example.
+* The logical representation contains only `clientScopeId`; the presence of the `clientTemplateId` field is hidden in physical representation.
+* Too long chain of delegations can cause performance overhead. It can be solved by the migration of storage representations to a newer version (in the future might be solved by some scheduled tasks functionality)
 
 # Querying objects
 
@@ -161,7 +147,7 @@ Query<InfinispanObjectEntity> query = qf.create("from nodowntimeupgrade.Infinisp
 
 # Message definition changes and Ickle queries
 
-Ickle query with a field name that is unknown to the Infinispan server fails. Therefore, we need to be careful about updates and removals we perform in message definitions. On top of that, we need to make sure that queries are built with definition changes in mind. For this reason, it may be necessary to introduce some intermediate storage versions that provide the migration step on query level. Given the previous example where we replaced `clientTemplateId` with `clientScopeId`, the migration could be done in the following steps:
+Ickle query with a field name that is unknown to the Infinispan server fails. Therefore, we need to be careful about updates and removals we perform in message definitions. On top of that, we need to make sure that queries are constructed with definition changes in mind. For this reason, it may be necessary to introduce some intermediate storage versions that provide the migration step on query level. Given the previous example where we replaced `clientTemplateId` with `clientScopeId`, the migration could be done in the following steps:
 
 ### Query in storage version 1
 
@@ -174,7 +160,7 @@ Ickle query with a field name that is unknown to the Infinispan server fails. Th
 ### Query in storage version 2
 
 - This is the intermediate version that uses both `clientTemplateId` and `clientScopeId`.
-- When doing a query it must count on the fact that the storage may contain objects with physical representation version `1`, that does not have `clientScopeId` defined.
+- When doing a query it must count on the fact that the storage may contain objects with _entity schema version_ `1`, that does not have `clientScopeId` defined.
 - The Keycloak logical layer searches only by `clientScopeId` attribute. Presence of `clientTemplateId` field in the physical layer is hidden from the logical layer.
 - Store of version `1` is able to read objects created concurrently by store version `2` because these are backward compatible and contain both `clientTemplateId` (for version `1`) and `clientScopeId` (for version `2`) fields.
 
@@ -182,30 +168,30 @@ For this particular migration path (remember the rule: `clientScopeId = "templat
 
 **Searched value is prefixed with `"template-"`**
 
-In this case, there may be also some object of physical version `1` that fulfills the given criteria; we need to take it into account.
+In this case, there may be also some object with _entity schema version_ `1` that fulfills the given criteria; we need to take it into account.
 
 ```
 FROM nodowntimeupgrade.InfinispanObjectEntity WHERE 
-    (entityVersion >= 2 AND entityVersion <= 3 AND clientScopeId = 'template-desired-value') 
+    (entitySchemaVersion >= 2 AND entitySchemaVersion <= 3 AND clientScopeId = 'template-desired-value') 
     OR
-    (entityVersion < 2 AND c.clientTemplateId = 'desired-value')
+    (entitySchemaVersion < 2 AND c.clientTemplateId = 'desired-value')
 ```
 
-Note the condition `entityVersion <= 3` comes from the no-downtime requirement that each version can read all previous versions, but only one following (`this.version + 1`).
+Note the condition `entitySchemaVersion <= 3` comes from the no-downtime requirement that each version can read all previous versions, but only one following (`this.version + 1`).
 
 
 **Searched value is _NOT_ prefixed with `"template-"**
 
-No adjustment is needed as no object entity version `1` fulfills this search (`clientScopeId` without `"template-"` prefix is undefined on these objects).
+No adjustment is needed as no object with _entity schema version_ `1` fulfills this search (`clientScopeId` without `"template-"` prefix is undefined on these objects).
 
 ```
 FROM nodowntimeupgrade.InfinispanObjectEntity WHERE (clientScopeId = 'desired-value')
 ```
 ### Query in storage version 3
 
-* The message definition must still contain both `clientTemplateId` and `clientScopeId` (the old field needs to be present because storage version 2 sometimes includes it in Ickle queries).
-* There is no migration of Ickle queries anymore, object entities version 1 are not returned from storage when searching by `clientScopeId`.
-* If the store detects, on startup, that there are some entities of version 1 in the storage, there is a **WARNING** printed that warns administrator of possible incomplete search results until they updates all objects to the version `>= 2`.
+* The message definition must still contain both `clientTemplateId` and `clientScopeId` (the old field needs to be present because storage version `2` sometimes includes it in Ickle queries).
+* There is no migration of Ickle queries anymore, objects with _entity schema version_ 1 are not returned from the storage when searching by `clientScopeId`.
+* If the store detects, on startup, that there are some objects with `entitySchemaVersion=1` in the storage, there is a **WARNING** printed that warns administrator of possible incomplete search results until they update all objects to the _entity schema version_ `>= 2`.
 
 We use only `clientScopeId` in queries.
 
@@ -215,12 +201,12 @@ FROM nodowntimeupgrade.InfinispanObjectEntity WHERE (clientScopeId == 'desired-v
 
 ### Query in storage in version 4 and beyond
 
-No changes for this particular field in search queries. From the query perspective, it is possible to remove `clientTemplateId` from the message definition. Note that this is a breaking change: Retaining presence of this field is still needed to be able to read old versions of the objects and migrate it to `clientScopeId`. The field definition should be kept as long as there may be a version smaller than 2 of the objects stored.
+No changes for this particular field in search queries. From the query perspective, it is possible to remove `clientTemplateId` from the message definition. Note that this is a breaking change: Retaining presence of this field is still needed to be able to read older versions of objects and migrating it to `clientScopeId`. The field definition should be kept as long as there may be an object of _entity schema version_ lower than `2` stored.
 
 
 # Speeding up queries with indices
 
-Infinispan uses [`Apache Lucene`](http://lucene.apache.org/) technology to index values in caches. Entities that contains fields that are indexed are specified in the cache configuration. Fields that are indexed are then specified in message definitions. In Java, each field that is indexed is annotated with annotation `@Protodoc`, see the example below.
+Infinispan uses [`Apache Lucene`](http://lucene.apache.org/) technology to index values in caches. Entities that contain fields that are indexed are specified in the cache configuration. Fields that are indexed are then specified in message definitions. In Java definition, each field that is indexed is annotated with annotation `@Protodoc`, see the example below.
 
 Cache configuration:
 ```xml
